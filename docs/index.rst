@@ -22,6 +22,7 @@ Inquiries and issues can be directed to the GitHub issues page, or via email to 
 
    iam_guide
    gas_iam_guide
+   installation_guide
    modules
 
 API Reference
