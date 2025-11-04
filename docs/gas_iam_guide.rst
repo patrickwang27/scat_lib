@@ -29,6 +29,9 @@ One can also specify the positions and labels directly with the intensity_molecu
 
 You can also use the scat_lib.gas_iam.geometry.read_xyz_frames utility to read molecular geometries from an XYZ file usually generated from a molecular dynamics simulation.
 Since the labels don't change, the function returns (labels, Array(Positions))
+
+
+
 .. code-block:: python
 
    from scat_lib.gas_iam import intensity_molecular_xray
@@ -43,6 +46,8 @@ Since the labels don't change, the function returns (labels, Array(Positions))
    Iqs = np.array([intensity_molecular_xray(pos, labels, q, inelastic=True) for pos in positions])
    # You can then do averaging over the frames
    Iq_avg = np.mean(Iqs, axis=0)
+
+
 
 Notes
 -----
