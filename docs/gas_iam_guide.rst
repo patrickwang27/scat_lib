@@ -25,15 +25,15 @@ Quickstart
    Iq = intensity_pyscf(mol, q, inelastic=True)  # I(q) in arbitrary units
 
 
-One can also specify the positions and labels directly with the intensity_molecular_xray method.
-
-You can also use the scat_lib.gas_iam.geometry.read_xyz_frames utility to read molecular geometries from an XYZ file usually generated from a molecular dynamics simulation.
-Since the labels don't change, the function returns (labels, Array(Positions))
-
-
+One can also specify the positions and labels directly with the ``intensity_molecular_xray``
+method. To help with that workflow, ``scat_lib.gas_iam.geometry.read_xyz_frames`` reads
+multi-frame XYZ files produced by molecular dynamics and returns a tuple
+``(labels, [positions_per_frame])`` where each ``positions_per_frame`` is an ``(N, 3)``
+array. A typical usage pattern looks like:
 
 .. code-block:: python
 
+   import numpy as np
    from scat_lib.gas_iam import intensity_molecular_xray
    from scat_lib.gas_iam.geometry import read_xyz_frames
 
@@ -42,9 +42,9 @@ Since the labels don't change, the function returns (labels, Array(Positions))
    for pos in positions:
        Iq = intensity_molecular_xray(pos, labels, q, inelastic=True)
 
-   #or one can use list comprehension!
+   # Or use a list comprehension if you just need the intensities collected
    Iqs = np.array([intensity_molecular_xray(pos, labels, q, inelastic=True) for pos in positions])
-   # You can then do averaging over the frames
+   # Average over frames if desired
    Iq_avg = np.mean(Iqs, axis=0)
 
 
