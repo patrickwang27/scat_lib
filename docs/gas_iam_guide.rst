@@ -22,11 +22,27 @@ Quickstart
    
    mol = gto.M(atom = 'Li 0 0 0; F 0 0 1.5639', basis = 'sto-3g')
    q = np.linspace(0, 10, 100)  # q in Ang
-   Iq = intensity_pyscf(mol, q)  # I(q) in arbitrary units
+   Iq = intensity_pyscf(mol, q, inelastic=True)  # I(q) in arbitrary units
 
 
 One can also specify the positions and labels directly with the intensity_molecular_xray method.
 
+You can also use the scat_lib.gas_iam.geometry.read_xyz_frames utility to read molecular geometries from an XYZ file usually generated from a molecular dynamics simulation.
+Since the labels don't change, the function returns (labels, Array(Positions))
+.. code-block:: python
+
+   from scat_lib.gas_iam import intensity_molecular_xray
+   from scat_lib.gas_iam.geometry import read_xyz_frames
+
+   labels, positions = read_xyz_frames('out.xyz')
+   q = np.linspace(0, 10, 100)  # q in Ang
+   for pos in positions:
+       Iq = intensity_molecular_xray(pos, labels, q, inelastic=True)
+
+   #or one can use list comprehension!
+   Iqs = np.array([intensity_molecular_xray(pos, labels, q, inelastic=True) for pos in positions])
+   # You can then do averaging over the frames
+   Iq_avg = np.mean(Iqs, axis=0)
 
 Notes
 -----
