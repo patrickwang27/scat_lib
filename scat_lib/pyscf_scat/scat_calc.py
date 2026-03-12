@@ -1,19 +1,19 @@
 import os
 import sys
 import subprocess
-from pyscf import gto, mcscf, scf, fci, ci, tools
+from pyscf import gto, mcscf, scf, fci, tools
 sys.path.append('./')
 from . import molden_reader_nikola_pyscf as pymldreader
 import numpy as np
-from copy import deepcopy 
-scat_dir = '/u/ajmk/sann8252/PyXSCAT_Patrick/src'
+from copy import deepcopy
+
+scat_dir = os.environ.get('SCAT_DIR', '/u/ajmk/wadh6737/PyXSCAT_Eirik/src')
+
 if scat_dir not in sys.path:
     sys.path.append(scat_dir)
 
 from . import ci_to_2rdm
-from pyscf.csf_fci import CSFTransformer
 from . import makerdm 
-
 
 
 types = {'total': '1', 
@@ -384,125 +384,12 @@ def run_scattering_csf(
         **kwargs
         ):
     """
-    Run scattering on a given CSF configuration.
-
-    Parameters
-    ----------
-    csf : list
-        The CSF configuration to be used for the scattering calculation.
-    nalpha : int
-        The number of alpha electrons in the active space.
-    nbeta : int
-        The number of beta electrons in the active space.
-    norb : int
-        The total number of orbitals in the system.
-    spin_mult : int
-        The spin multiplicity of the system.
-    casscf : pyscf.mcscf.CASSCF
-        The CASSCF object containing the CI coefficients and FCISolver.
-    mf : pyscf.scf.hf.SCF
-        The mean-field object containing the molecular information.
-    file_name : str
-        The output scattering file name
-    orbital_type : str
-        The type of orbitals to be used, either 'HF' or 'CASSCF'.
-    type : str, (total, elastic)
-        type of scattering to be computed, defaults total
-    log_file : str
-        Path to the log file for scattering calculation
-    q_range : tuple
-        The range of q values for the scattering calculation.
-    q_points : int
-        The number of q points to be used in the calculation.
-    cutoffcentre : float
-        The cutoff value for the centre of the scattering calculation.
-    cutoffz : float
-        The cutoff value for the z component of the scattering calculation.
-    cutoffmd : float
-        The cutoff value for the md component of the scattering calculation.
-    state1 : int
-        The first state to be considered in the scattering calculation.
-    state2 : int
-        The second state to be considered in the scattering calculation.
-    state3 : int
-        The third state to be considered in the scattering calculation.
-    
-    Returns
-    -------
-    q : array_like
-        An array of q wave vector values, in a.u.
-    intensity : array_like
-        An array of intensity values at the corresponding q
+    DEPRECATED: Use run_scattering_pyscf
     """
-
-    transformer = CSFTransformer(norb, nalpha, nbeta, spin_mult)
-    dets = transformer.vec_csf2det(csf)
-    occslst = fci.cistring.gen_occslst(range(casscf.ncas), (nalpha + nbeta) // 2)
-    alpha = []
-    beta = []
-
-    for i, occs_alpha in enumerate(occslst.tolist()):
-        for j, occs_beta in enumerate(occslst.tolist()):
-            alpha.append(occs_alpha)
-            beta.append(occs_beta)
-
-    casscf_copy = deepcopy(casscf)
-    alpha = np.array(alpha)
-    beta = np.array(beta)
-    ci_to_2rdm.update_ci_coeffs(alpha, beta, dets.flatten(), casscf_copy, update = True)
-
-    result = run_scattering_pyscf(
-        casscf_copy,
-        mf,
-        file_name,
-        orbital_type = orbital_type,
-        type=type,
-        log_file=log_file,
-        q_range = q_range,
-        q_points = q_points,
-        cutoffcentre = cutoffcentre,
-        cutoffz = cutoffz,
-        cutoffmd = cutoffmd,
-        state1 = state1,
-        state2 = state2,
-        state3 = state3,
-        **kwargs
-    )
-    return result
+    raise NotImplementedError("run_scattering_csf is deprecated. Use run_scattering_pyscf instead.")
     
     
 
 
-if __name__ in "__main__":
-    mol = gto.Mole(atom = 'Be 0 0 0', basis = '3-21g', symmetry = False, spin = 0, charge = 0 , cart=True)
-    mf = scf.HF(mol)
-    mf.kernel()
-    casscf = mcscf.CASSCF(mf, 9, 4)
-    casscf.kernel()
-    pyscf_result = run_scattering_pyscf(
-        casscf,
-        mf,
-        'test_total_pyscf',
-        orbital_type = 'CASSCF',
-        type='total',
-        log_file='scat.log',
-        q_range = (1E-10,250),
-        q_points = 1000,
-        cutoffcentre = 1E-2,
-        cutoffz = 1e-20,
-        cutoffmd = 1e-20,
-        state1 = 1,
-        state2 = 1,
-        state3 = 1
-    )
-    transformer = CSFTransformer(9,2,2,1)
-    csf_result = run_scattering_csf(
-        transformer.vec_det2csf(casscf.ci),
-        2,
-        2,
-        9,
-        1,
-        casscf,
-        mf,
-        'csf_test')
-    print((csf_result - pyscf_result).sum())
+if __name__ == "__main__":
+    print("This module is not meant to be run directly. Please import the functions and use them in your code.")

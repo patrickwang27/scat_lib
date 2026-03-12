@@ -4,4 +4,3 @@ numpy>=1.20.0
 scipy>=1.7.0
 pyscf>=2.0.0
 matplotlib>=3.5.0
-pyscf-forge@git+https://github.com/pyscf/pyscf-forge
