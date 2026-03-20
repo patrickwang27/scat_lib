@@ -9,8 +9,8 @@ from copy import deepcopy
 
 SCAT_DIR = os.environ.get('SCAT_DIR', '/u/ajmk/wadh6737/PyXSCAT_Eirik/src')
 
-if scat_dir not in sys.path:
-    sys.path.append(scat_dir)
+if SCAT_DIR not in sys.path:
+    sys.path.append(SCAT_DIR)
 
 from . import ci_to_2rdm
 from . import makerdm 
