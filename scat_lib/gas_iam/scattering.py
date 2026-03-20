@@ -1,4 +1,5 @@
 from __future__ import annotations
+from scipy.interpolate import CubicSpline
 import os
 import re
 from functools import lru_cache
@@ -80,7 +81,7 @@ def _inelastic_lookup(base_symbol: str, s: float) -> Optional[float]:
     if data is None:
         return None
     if _INELASTIC_GRID[0] <= s <= _INELASTIC_GRID[-1]:
-        return float(np.interp(s, _INELASTIC_GRID, data))
+        return float(CubicSpline(_INELASTIC_GRID, data)(s))
     return None
 
 def _sinc(x: np.ndarray) -> np.ndarray:
@@ -288,3 +289,5 @@ def intensity_pyscf(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTable
     from .pyscf_bridge import positions_and_labels_from_mole
     positions, labels = positions_and_labels_from_mole(mol)
     return intensity_molecular_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map, inelastic=inelastic)
+
+    
