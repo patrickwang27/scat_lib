@@ -2,12 +2,19 @@ import os
 import sys
 import subprocess
 from pyscf import gto, mcscf, scf, fci, tools
+from pyscf.dmrgscf.dmrgci import DMRGCI, DMRGSCF
 sys.path.append('./')
 from . import molden_reader_nikola_pyscf as pymldreader
 import numpy as np
 from copy import deepcopy
+from mo2ao import *
+from make_zcontraction_files import _make_zcontraction_files, _make_zcontraction_option
+
+
 
 SCAT_DIR = os.environ.get('SCAT_DIR', '/u/ajmk/wadh6737/PyXSCAT_Eirik/src')
+ZCOTR_EXE = os.environ.get('SCAT_DIR_ZCOTR', '/u/ajmk/chem1721/PyXSCAT_last_commit/PyXSCAT/src/Main2.exe')
+
 
 if SCAT_DIR not in sys.path:
     sys.path.append(SCAT_DIR)
@@ -166,6 +173,29 @@ def prepare_files(
 
     return 
 
+
+def prepare_zcotr_files(
+        file_name,
+        molden_file,
+        two_rdm_file,
+        type='total',
+        q_range = (1E-10,250),
+        q_points = 1000,
+        cutoffcentre = 1E-2,
+        cutoffz = 1e-20,
+        cutoffmd = 1e-20,
+        state1 = 1,
+        state2 = 1,
+        path = None
+        ):
+    """
+    Prepares the files needed to run scattering with zcotr backend.
+    """
+    global types
+    _make_zcontraction_files(molden_file, path=path)
+    _make_zcontraction_option(molden_file, two_rdm_file, type=type, q_range=q_range, q_points=q_points, cutoffcentre=cutoffcentre, cutoffz=cutoffz, cutoffmd=cutoffmd, state1=state1, state2=state2, state3=state3)
+
+
 def run_scattering(
         file_name,
         one_rdm_file,
@@ -249,11 +279,104 @@ def run_scattering(
     
     return result
 
+
+def run_scattering_zcotr(
+        file_name,
+        one_rdm_file,
+        two_rdm_file,
+        molden_file,
+        type='total',
+        log_file='scat.log',
+        q_range = (1E-10,250),
+        q_points = 1000,
+        cutoffcentre = 1E-2,
+        cutoffz = 1e-20,
+        cutoffmd = 1e-20,
+        state1 = 1,
+        state2 = 1,
+        state3 = 1,
+        clean_files=True
+        ):
+    """
+    Runs scattering calculation using zcotr backend on a given one_rdm and two_rdm
+    file.
+
+    Parameters
+    ----------
+    file_name : str
+        The output scattering file name
+    one_rdm_file : str
+        Path to the 1rdm file
+    two_rdm_file : str
+        Path to the 2rdm file
+    molden_file : str
+        Path to the Molden File for orbitals
+    type : str, (total, elastic)
+        type of scattering to be computed, defaults total
+    log_file : str
+        Path to the log file for scattering calculation
+    q_range : tuple
+        The range of q values for the scattering calculation.
+    q_points : int
+        The number of q points to be used in the calculation.
+    cutoffcentre : float
+        The cutoff value for the centre of the scattering calculation.
+    cutoffz : float
+        The cutoff value for the z component of the scattering calculation.
+    cutoffmd : float
+        The cutoff value for the md component of the scattering calculation.
+    state1 : int
+        The first state to be considered in the scattering calculation.
+    state2 : int
+        The second state to be considered in the scattering calculation.
+    state3 : int
+        The third state to be considered in the scattering calculation.
+    clean_files : bool
+        Whether to clean up temporary files after the calculation.
+    """
+    prepare_zcotr_files(
+        file_name,
+        molden_file,
+        two_rdm_file,
+        type=type,
+        q_range=q_range,
+        q_points=q_points,
+        cutoffcentre=cutoffcentre,
+        cutoffz=cutoffz,
+        cutoffmd=cutoffmd,
+        state1=state1,
+        state2=state2,
+        state3=state3,
+        path=None
+    )
+    try:
+        os.system(f'LD_LIBRARY_PATH=/opt/intel/oneapi/vpl/2022.0.0/lib:/opt/intel/oneapi/tbb/2021.5.1/env/../lib/intel64/gcc4.8:/opt/intel/oneapi/mpi/2021.5.1//libfabric/lib:/opt/intel/oneapi/mpi/2021.5.1//lib/release:/opt/intel/oneapi/mpi/2021.5.1//lib:/opt/intel/oneapi/mkl/2022.0.2/lib/intel64:/opt/intel/oneapi/itac/2021.5.0/slib:/opt/intel/oneapi/ipp/2021.5.2/lib/intel64:/opt/intel/oneapi/ippcp/2021.5.1/lib/intel64:/opt/intel/oneapi/ipp/2021.5.2/lib/intel64:/opt/intel/oneapi/dnnl/2022.0.2/cpu_dpcpp_gpu_dpcpp/lib:/opt/intel/oneapi/debugger/2021.5.0/gdb/intel64/lib:/opt/intel/oneapi/debugger/2021.5.0/libipt/intel64/lib:/opt/intel/oneapi/debugger/2021.5.0/dep/lib:/opt/intel/oneapi/dal/2021.5.3/lib/intel64:/opt/intel/oneapi/compiler/2022.0.2/linux/lib:/opt/intel/oneapi/compiler/2022.0.2/linux/lib/x64:/opt/intel/oneapi/compiler/2022.0.2/linux/lib/oclfpga/host/linux64/lib:/opt/intel/oneapi/compiler/2022.0.2/linux/compiler/lib/intel64_lin:/opt/intel/oneapi/ccl/2021.5.1/lib/cpu_gpu_dpcpp:{ZCOTR_EXE} > {log_file}')
+    except Exception as e:
+        print(f"Error running ZCotr Main2.exe: {e}")
+        return None
+    
+    result = np.loadtxt(f'{file_name}')
+    if clean_files:
+        subprocess.run(['rm', 'options.dat'])
+        subprocess.run(['rm', 'basis.dat'])
+        subprocess.run(['rm', 'MOs.dat'])
+        subprocess.run(['rm', '1rdm_' + file_name + '.txt'])
+        subprocess.run(['rm', '2rdm_' + file_name + '.txt'])
+        subprocess.run(['rm', '2rdm.txt'])
+        subprocess.run(['rm', file_name + '.molden'])
+        subprocess.run(['rm', file_name])
+    
+    return result
+
+
+
+
 def run_scattering_pyscf(
         casscf,
         mf,
         file_name,
         orbital_type = 'HF',
+        backend = 'normal',
         type='total',
         log_file='scat.log',
         q_range = (1E-10,250),
@@ -280,6 +403,9 @@ def run_scattering_pyscf(
         The output scattering file name
     orbital_type : str
         The type of orbitals to be used, either 'HF' or 'CASSCF'.
+    backend : str
+        The backend to be used for the calculation, defaults to 'normal'.
+        Choices are 'normal' and 'zcotr'.
     type : str, (total, elastic)
         type of scattering to be computed, defaults total
     log_file : str
@@ -309,57 +435,117 @@ def run_scattering_pyscf(
         An array of intensity values at the corresponding q
     """
 
-    if orbital_type == 'HF':
-        tools.molden.dump_scf(mf, f'{file_name}.molden')
-    elif orbital_type == 'CASSCF':
-        tools.molden.from_mcscf(casscf, f'{file_name}.molden')
-    
-    _ci = casscf.ci
-    nelecas = casscf.nelecas
-    ncas = casscf.ncas
-    ncore = casscf.ncore
-    nmo = casscf.mo_coeff.shape[1]
+    if backend == 'zcotr':
+        if isinstance(casscf, (DMRGSCF, DMRGCI)):
+            _ci = casscf.ci
+            nelecas = casscf.nelecas
+            ncas = casscf.ncas
+            ncore = casscf.ncore
+            nmo = casscf.mo_coeff.shape[1]
+            dm1, dm2 = casscf.fcisolver.make_rdm12(0, casscf.ncas, casscf.nelecas)
+        
+        else:
+            _ci = casscf.ci
+            nelecas = casscf.nelecas
+            ncas = casscf.ncas
+            ncore = casscf.ncore
+            nmo = casscf.mo_coeff.shape[1]
+            casdm1, casdm2 = casscf.fcisolver.make_rdm12(_ci, ncas, nelecas)
+            dm1, dm2 = makerdm._make_rdm12_on_mo(casdm1, casdm2, ncore, ncas, nmo)
+        
+        if orbital_type == 'HF':
+            tools.molden.dump_scf(mf, f'{file_name}.molden')
+        elif orbital_type == 'CASSCF':
+            tools.molden.from_mcscf(casscf, f'{file_name}.molden')
+        
+        pthresh=1e-17
 
-    casdm1, casdm2 = casscf.fcisolver.make_rdm12(_ci, ncas, nelecas)
-    dm1, dm2 = makerdm._make_rdm12_on_mo(casdm1, casdm2, ncore, ncas, nmo)
-
-    no_mos = dm1.shape[0]
-
-    pthresh=1e-17
-
-    with open(f'1rdm_{file_name}.txt', 'w') as f:
-        for i in range(no_mos):
-            for j in range(no_mos):
-                if np.abs(dm1[i,j]) > pthresh:
-                    f.write(f"{i+1: 3d}  {j+1: 3d}  {dm1[i, j]}\n")
+        with open(f'1rdm_{file_name}.txt', 'w') as f:
+            for i in range(no_mos):
+                for j in range(no_mos):
+                    if np.abs(dm1[i,j]) > pthresh:
+                        f.write(f"{i+1: 3d}  {j+1: 3d}  {dm1[i, j]}\n")
 
 
-    with open(f'2rdm_{file_name}.txt', 'w') as f:
-        for i in range(no_mos):
-            for j in range(no_mos):
-                for k in range(no_mos):
-                    for l in range(no_mos):
-                        if np.abs(dm2[i, j, k, l]) > pthresh:
-                            f.write(
-                                f"{i+1: 3d}  {j+1: 3d}  {k+1: 3d}  {l+1: 3d}  {dm2[i, j, k, l]}\n"
-                            )
+        with open(f'2rdm_{file_name}.txt', 'w') as f:
+            for i in range(no_mos):
+                for j in range(no_mos):
+                    for k in range(no_mos):
+                        for l in range(no_mos):
+                            if np.abs(dm2[i, j, k, l]) > pthresh:
+                                f.write(
+                                    f"{i+1: 3d}  {j+1: 3d}  {k+1: 3d}  {l+1: 3d}  {dm2[i, j, k, l]}\n"
+                                )
+        result = run_scattering_zcotr(file_name,
+                                f'1rdm_{file_name}.txt', 
+                                f'2rdm_{file_name}.txt', 
+                                f'{file_name}.molden',
+                                type=type,
+                                log_file=log_file,
+                                q_range = q_range,
+                                q_points = q_points,
+                                cutoffcentre = cutoffcentre,
+                                cutoffz = cutoffz,
+                                cutoffmd = cutoffmd,
+                                state1 = state1,
+                                state2 = state2,
+                                state3 = state3,
+                                **kwargs)
+        return result
 
-    result = run_scattering(file_name, 
-                            f'1rdm_{file_name}.txt', 
-                            f'2rdm_{file_name}.txt', 
-                            f'{file_name}.molden',
-                            type=type,
-                            log_file=log_file,
-                            q_range = q_range,
-                            q_points = q_points,
-                            cutoffcentre = cutoffcentre,
-                            cutoffz = cutoffz,
-                            cutoffmd = cutoffmd,
-                            state1 = state1,
-                            state2 = state2,
-                            state3 = state3,
-                            **kwargs)
-    return result
+
+    if backend == 'normal':
+        if orbital_type == 'HF':
+            tools.molden.dump_scf(mf, f'{file_name}.molden')
+        elif orbital_type == 'CASSCF':
+            tools.molden.from_mcscf(casscf, f'{file_name}.molden')
+        
+        _ci = casscf.ci
+        nelecas = casscf.nelecas
+        ncas = casscf.ncas
+        ncore = casscf.ncore
+        nmo = casscf.mo_coeff.shape[1]
+
+        casdm1, casdm2 = casscf.fcisolver.make_rdm12(_ci, ncas, nelecas)
+        dm1, dm2 = makerdm._make_rdm12_on_mo(casdm1, casdm2, ncore, ncas, nmo)
+
+        no_mos = dm1.shape[0]
+
+        pthresh=1e-17
+
+        with open(f'1rdm_{file_name}.txt', 'w') as f:
+            for i in range(no_mos):
+                for j in range(no_mos):
+                    if np.abs(dm1[i,j]) > pthresh:
+                        f.write(f"{i+1: 3d}  {j+1: 3d}  {dm1[i, j]}\n")
+
+
+        with open(f'2rdm_{file_name}.txt', 'w') as f:
+            for i in range(no_mos):
+                for j in range(no_mos):
+                    for k in range(no_mos):
+                        for l in range(no_mos):
+                            if np.abs(dm2[i, j, k, l]) > pthresh:
+                                f.write(
+                                    f"{i+1: 3d}  {j+1: 3d}  {k+1: 3d}  {l+1: 3d}  {dm2[i, j, k, l]}\n"
+                                )
+
+        result = run_scattering(file_name, 
+                                f'1rdm_{file_name}.txt', 
+                                f'2rdm_{file_name}.txt', 
+                                f'{file_name}.molden',
+                                type=type,
+                                log_file=log_file,
+                                q_range = q_range,
+                                q_points = q_points,
+                                cutoffcentre = cutoffcentre,
+                                cutoffz = cutoffz,
+                                cutoffmd = cutoffmd,
+                                state1 = state1,
+                                state2 = state2,
+                                state3 = state3,
+                                **kwargs)
+        return result
 
 def run_scattering_csf(
         csf,
@@ -387,7 +573,6 @@ def run_scattering_csf(
     DEPRECATED: Use run_scattering_pyscf
     """
     raise NotImplementedError("run_scattering_csf is deprecated. Use run_scattering_pyscf instead.")
-    
     
 
 

@@ -108,3 +108,28 @@ def create_Zcotr(mf,mol,dm2):
     return dm3
     
       
+def mo2ao_2rdm_split(dm2_mo, C):
+    """
+    Transform a 2-RDM Γ(p,q,r,s) from MO basis to AO basis:
+
+        Γ_AO(μ,ν,λ,σ) = Σ_pqrs C_{μp} C_{νq} C_{λr} C_{σs} Γ_MO(p,q,r,s)
+
+    Split into 4 contractions for speed and memory stability.
+    """
+    # Step 1: contract first MO index p → AO index μ
+    # X(μ,q,r,s) = Σ_p C(μ,p) * Γ(p,q,r,s)
+    X = np.einsum("mp,pqrs->mqrs", C, dm2_mo, optimize=True)
+
+    # Step 2: contract second index q → AO index ν
+    # Y(μ,ν,r,s) = Σ_q C(ν,q) * X(μ,q,r,s)
+    Y = np.einsum("nq,mqrs->mnrs", C, X, optimize=True)
+
+    # Step 3: contract third index r → AO index λ
+    # Z(μ,ν,λ,s) = Σ_r C(λ,r) * Y(μ,ν,r,s)
+    Z = np.einsum("lr,mnrs->mnl s", C, Y, optimize=True)
+
+    # Step 4: contract final index s → AO index σ
+    # Γ_AO(μ,ν,λ,σ) = Σ_s C(σ,s) * Z(μ,ν,λ,s)
+    Gamma_AO = np.einsum("ks,mnls->mn lk", C, Z, optimize=True)
+
+    return Gamma_AO
