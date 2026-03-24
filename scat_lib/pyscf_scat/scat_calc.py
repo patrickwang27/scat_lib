@@ -347,7 +347,6 @@ def run_scattering_zcotr(
         cutoffmd=cutoffmd,
         state1=state1,
         state2=state2,
-        state3=state3,
         path=None
     )
     try:
