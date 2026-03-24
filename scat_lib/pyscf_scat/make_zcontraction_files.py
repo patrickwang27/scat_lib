@@ -25,7 +25,7 @@ def _make_zcontraction_option(
         cutoffmd = 1e-20,
         state1 = 1,
         state2 = 1,
-        path= None):
+        path= './'):
     '''
     Creates the options.dat file needed for Z-contraction calculations.
     Parameters

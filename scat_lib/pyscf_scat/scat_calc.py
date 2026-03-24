@@ -194,7 +194,7 @@ def prepare_zcotr_files(
     """
     global types
     make_zcontraction_files._make_zcontraction_files(molden_file, path=path)
-    make_zcontraction_files._make_zcontraction_options(molden_file, two_rdm_file, type=type, q_range=q_range, q_points=q_points, cutoffcentre=cutoffcentre, cutoffz=cutoffz, cutoffmd=cutoffmd, state1=state1, state2=state2)
+    make_zcontraction_files._make_zcontraction_option(molden_file, file_name, two_rdm_file, type=type, q_range=q_range, q_points=q_points, cutoffcentre=cutoffcentre, cutoffz=cutoffz, cutoffmd=cutoffmd, state1=state1, state2=state2, path=path)
 
 
 def run_scattering(
