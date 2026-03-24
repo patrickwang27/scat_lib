@@ -436,7 +436,7 @@ def run_scattering_pyscf(
     """
 
     if backend == 'zcotr':
-        if isinstance(casscf, (DMRGSCF, DMRGCI)):
+        if isinstance(casscf.fcisolver, (DMRGSCF, DMRGCI)):
             _ci = casscf.ci
             nelecas = casscf.nelecas
             ncas = casscf.ncas
@@ -500,11 +500,22 @@ def run_scattering_pyscf(
         elif orbital_type == 'CASSCF':
             tools.molden.from_mcscf(casscf, f'{file_name}.molden')
         
-        _ci = casscf.ci
-        nelecas = casscf.nelecas
-        ncas = casscf.ncas
-        ncore = casscf.ncore
-        nmo = casscf.mo_coeff.shape[1]
+        if isinstance(casscf.fcisolver, (DMRGSCF, DMRGCI)):
+            _ci = casscf.ci
+            nelecas = casscf.nelecas
+            ncas = casscf.ncas
+            ncore = casscf.ncore
+            nmo = casscf.mo_coeff.shape[1]
+            dm1, dm2 = casscf.fcisolver.make_rdm12(0, casscf.ncas, casscf.nelecas)
+        
+        else:
+            _ci = casscf.ci
+            nelecas = casscf.nelecas
+            ncas = casscf.ncas
+            ncore = casscf.ncore
+            nmo = casscf.mo_coeff.shape[1]
+            casdm1, casdm2 = casscf.fcisolver.make_rdm12(_ci, ncas, nelecas)
+            dm1, dm2 = makerdm._make_rdm12_on_mo(casdm1, casdm2, ncore, ncas, nmo)
 
         casdm1, casdm2 = casscf.fcisolver.make_rdm12(_ci, ncas, nelecas)
         dm1, dm2 = makerdm._make_rdm12_on_mo(casdm1, casdm2, ncore, ncas, nmo)
