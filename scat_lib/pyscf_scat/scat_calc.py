@@ -437,7 +437,7 @@ def run_scattering_pyscf(
     """
 
     if backend == 'zcotr':
-        if isinstance(casscf.fcisolver, (DMRGSCF, DMRGCI)):
+        if isinstance(casscf.fcisolver, DMRGCI):
             _ci = casscf.ci
             nelecas = casscf.nelecas
             ncas = casscf.ncas
@@ -488,8 +488,8 @@ def run_scattering_pyscf(
             tools.molden.dump_scf(mf, f'{file_name}.molden')
         elif orbital_type == 'CASSCF':
             tools.molden.from_mcscf(casscf, f'{file_name}.molden')
-        
-        if isinstance(casscf.fcisolver, (DMRGSCF, DMRGCI)):
+
+        if isinstance(casscf.fcisolver, DMRGCI):
             _ci = casscf.ci
             nelecas = casscf.nelecas
             ncas = casscf.ncas
