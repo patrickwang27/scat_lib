@@ -7,8 +7,9 @@ sys.path.append('./')
 from . import molden_reader_nikola_pyscf as pymldreader
 import numpy as np
 from copy import deepcopy
-from mo2ao import *
-from make_zcontraction_files import _make_zcontraction_files, _make_zcontraction_option
+from . import mo2ao 
+from . import make_zcontraction_files
+# _make_zcontraction_files, _make_zcontraction_option
 
 
 
@@ -192,8 +193,8 @@ def prepare_zcotr_files(
     Prepares the files needed to run scattering with zcotr backend.
     """
     global types
-    _make_zcontraction_files(molden_file, path=path)
-    _make_zcontraction_option(molden_file, two_rdm_file, type=type, q_range=q_range, q_points=q_points, cutoffcentre=cutoffcentre, cutoffz=cutoffz, cutoffmd=cutoffmd, state1=state1, state2=state2, state3=state3)
+    make_zcontraction_files._make_zcontraction_files(molden_file, path=path)
+    make_zcontraction_files._make_zcontraction_options(molden_file, two_rdm_file, type=type, q_range=q_range, q_points=q_points, cutoffcentre=cutoffcentre, cutoffz=cutoffz, cutoffmd=cutoffmd, state1=state1, state2=state2)
 
 
 def run_scattering(
@@ -460,25 +461,13 @@ def run_scattering_pyscf(
         
         pthresh=1e-17
 
-        with open(f'1rdm_{file_name}.txt', 'w') as f:
-            for i in range(no_mos):
-                for j in range(no_mos):
-                    if np.abs(dm1[i,j]) > pthresh:
-                        f.write(f"{i+1: 3d}  {j+1: 3d}  {dm1[i, j]}\n")
 
+        dm3 = mo2ao.create_Zcotr(mf, casscf.mol, dm2)
+        dm3.tofile(f'2rdmAO_{file_name}.npy')
 
-        with open(f'2rdm_{file_name}.txt', 'w') as f:
-            for i in range(no_mos):
-                for j in range(no_mos):
-                    for k in range(no_mos):
-                        for l in range(no_mos):
-                            if np.abs(dm2[i, j, k, l]) > pthresh:
-                                f.write(
-                                    f"{i+1: 3d}  {j+1: 3d}  {k+1: 3d}  {l+1: 3d}  {dm2[i, j, k, l]}\n"
-                                )
         result = run_scattering_zcotr(file_name,
                                 f'1rdm_{file_name}.txt', 
-                                f'2rdm_{file_name}.txt', 
+                                f'2rdmAO_{file_name}.npy',
                                 f'{file_name}.molden',
                                 type=type,
                                 log_file=log_file,
