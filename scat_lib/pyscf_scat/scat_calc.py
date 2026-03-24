@@ -464,11 +464,11 @@ def run_scattering_pyscf(
 
 
         dm3 = mo2ao.create_Zcotr(mf, casscf.mol, dm2)
-        dm3.tofile(f'2rdmAO_{file_name}.npy')
+        dm3.tofile(f'2rdmAO')
 
         result = run_scattering_zcotr(file_name,
                                 f'1rdm_{file_name}.txt', 
-                                f'2rdmAO_{file_name}.npy',
+                                f'2rdmAO',
                                 f'{file_name}.molden',
                                 type=type,
                                 log_file=log_file,
