@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+from pathlib import Path
 from pyscf import gto, mcscf, scf, fci, tools
 from pyscf.dmrgscf.dmrgci import DMRGCI, DMRGSCF
 sys.path.append('./')
@@ -15,11 +16,33 @@ from . import make_zcontraction_files
 
 SCAT_DIR = os.environ.get('SCAT_DIR', '/u/ajmk/wadh6737/PyXSCAT_Eirik/src')
 ZCOTR_EXE = os.environ.get('ZCOTR_EXE', '/u/ajmk/chem1721/PyXSCAT_last_commit/PyXSCAT/src/Main2.exe')
+PACKAGE_BIN_DIR = Path(__file__).resolve().parents[1] / 'bin'
+INTEL_ONEAPI_LIBRARY_PATHS = [
+    '/opt/intel/oneapi/vpl/2022.0.0/lib',
+    '/opt/intel/oneapi/tbb/2021.5.1/env/../lib/intel64/gcc4.8',
+    '/opt/intel/oneapi/mpi/2021.5.1//libfabric/lib',
+    '/opt/intel/oneapi/mpi/2021.5.1//lib/release',
+    '/opt/intel/oneapi/mpi/2021.5.1//lib',
+    '/opt/intel/oneapi/mkl/2022.0.2/lib/intel64',
+    '/opt/intel/oneapi/itac/2021.5.0/slib',
+    '/opt/intel/oneapi/ipp/2021.5.2/lib/intel64',
+    '/opt/intel/oneapi/ippcp/2021.5.1/lib/intel64',
+    '/opt/intel/oneapi/dnnl/2022.0.2/cpu_dpcpp_gpu_dpcpp/lib',
+    '/opt/intel/oneapi/debugger/2021.5.0/gdb/intel64/lib',
+    '/opt/intel/oneapi/debugger/2021.5.0/libipt/intel64/lib',
+    '/opt/intel/oneapi/debugger/2021.5.0/dep/lib',
+    '/opt/intel/oneapi/dal/2021.5.3/lib/intel64',
+    '/opt/intel/oneapi/compiler/2022.0.2/linux/lib',
+    '/opt/intel/oneapi/compiler/2022.0.2/linux/lib/x64',
+    '/opt/intel/oneapi/compiler/2022.0.2/linux/lib/oclfpga/host/linux64/lib',
+    '/opt/intel/oneapi/compiler/2022.0.2/linux/compiler/lib/intel64_lin',
+    '/opt/intel/oneapi/ccl/2021.5.1/lib/cpu_gpu_dpcpp',
+]
 
 
-if SCAT_DIR not in sys.path:
+if os.path.isdir(SCAT_DIR) and SCAT_DIR not in sys.path:
     sys.path.append(SCAT_DIR)
-if ZCOTR_EXE not in sys.path:
+if os.path.isdir(ZCOTR_EXE) and ZCOTR_EXE not in sys.path:
     sys.path.append(ZCOTR_EXE)
 
 from . import ci_to_2rdm
@@ -35,6 +58,118 @@ types = {'total': '1',
          'total_j2' : '7',
          'elastic_j2' :'8',
          'resolved_cms' : '9'}
+
+
+def _resolve_executable(config_value, executable_name, fallback_names=()):
+    """
+    Resolve an executable from either a file path or a directory path.
+    """
+    candidates = []
+
+    if config_value:
+        configured = Path(config_value).expanduser()
+        if configured.is_dir():
+            candidates.append(configured / executable_name)
+            for fallback_name in fallback_names:
+                candidates.append(configured / fallback_name)
+        else:
+            candidates.append(configured)
+
+    candidates.append(PACKAGE_BIN_DIR / executable_name)
+    for fallback_name in fallback_names:
+        candidates.append(PACKAGE_BIN_DIR / fallback_name)
+
+    seen = set()
+    unique_candidates = []
+    for candidate in candidates:
+        candidate = candidate.resolve(strict=False)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        unique_candidates.append(candidate)
+        if candidate.is_file():
+            return candidate
+
+    searched = '\n'.join(str(candidate) for candidate in unique_candidates)
+    raise FileNotFoundError(
+        f"Could not locate executable '{executable_name}'. Checked:\n{searched}"
+    )
+
+
+def _build_runner_env(executable):
+    env = os.environ.copy()
+    library_paths = list(INTEL_ONEAPI_LIBRARY_PATHS)
+    library_paths.append(str(executable.parent))
+
+    current_ld_library_path = env.get('LD_LIBRARY_PATH')
+    if current_ld_library_path:
+        library_paths.append(current_ld_library_path)
+
+    deduped = []
+    seen = set()
+    for path in library_paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        deduped.append(path)
+
+    env['LD_LIBRARY_PATH'] = ':'.join(deduped)
+    return env
+
+
+def _run_scattering_executable(executable, log_file):
+    executable = Path(executable).resolve()
+    log_path = Path(log_file).resolve()
+
+    with open(log_path, 'w') as log_handle:
+        completed = subprocess.run(
+            [str(executable)],
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            env=_build_runner_env(executable),
+            check=False,
+        )
+
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"Scattering executable '{executable}' failed with exit code "
+            f"{completed.returncode}. See log at {log_path}"
+        )
+
+    return log_path
+
+
+def _load_scattering_result(file_name, executable, log_file):
+    result_path = Path(file_name).resolve()
+    if not result_path.exists():
+        raise FileNotFoundError(
+            f"Scattering executable '{executable}' finished but did not create "
+            f"expected output file '{result_path}'. See log at {Path(log_file).resolve()}"
+        )
+    return np.loadtxt(result_path)
+
+
+def _cleanup_scattering_files(file_name, extra_files=None):
+    files_to_remove = [
+        'options.dat',
+        'basis.dat',
+        'MOs.dat',
+        'MOs2.dat',
+        'coeffs.dat',
+        '2rdm.txt',
+        f'1rdm_{file_name}.txt',
+        f'2rdm_{file_name}.txt',
+        f'{file_name}.molden',
+        file_name,
+    ]
+    if extra_files:
+        files_to_remove.extend(extra_files)
+
+    for path in files_to_remove:
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            pass
 
 def prepare_files(
         file_name,
@@ -264,21 +399,14 @@ def run_scattering(
     #print(f'Running scattering with type {type} and file {file_name}')
 
     try:
-        os.system(f'LD_LIBRARY_PATH=/opt/intel/oneapi/vpl/2022.0.0/lib:/opt/intel/oneapi/tbb/2021.5.1/env/../lib/intel64/gcc4.8:/opt/intel/oneapi/mpi/2021.5.1//libfabric/lib:/opt/intel/oneapi/mpi/2021.5.1//lib/release:/opt/intel/oneapi/mpi/2021.5.1//lib:/opt/intel/oneapi/mkl/2022.0.2/lib/intel64:/opt/intel/oneapi/itac/2021.5.0/slib:/opt/intel/oneapi/ipp/2021.5.2/lib/intel64:/opt/intel/oneapi/ippcp/2021.5.1/lib/intel64:/opt/intel/oneapi/ipp/2021.5.2/lib/intel64:/opt/intel/oneapi/dnnl/2022.0.2/cpu_dpcpp_gpu_dpcpp/lib:/opt/intel/oneapi/debugger/2021.5.0/gdb/intel64/lib:/opt/intel/oneapi/debugger/2021.5.0/libipt/intel64/lib:/opt/intel/oneapi/debugger/2021.5.0/dep/lib:/opt/intel/oneapi/dal/2021.5.3/lib/intel64:/opt/intel/oneapi/compiler/2022.0.2/linux/lib:/opt/intel/oneapi/compiler/2022.0.2/linux/lib/x64:/opt/intel/oneapi/compiler/2022.0.2/linux/lib/oclfpga/host/linux64/lib:/opt/intel/oneapi/compiler/2022.0.2/linux/compiler/lib/intel64_lin:/opt/intel/oneapi/ccl/2021.5.1/lib/cpu_gpu_dpcpp:{SCAT_DIR}/Main.exe > {log_file}')
+        executable = _resolve_executable(SCAT_DIR, 'Main.exe', fallback_names=('Main2.exe',))
+        _run_scattering_executable(executable, log_file)
+        result = _load_scattering_result(file_name, executable, log_file)
     except Exception as e:
-        print(f"Error running Main.exe: {e}")
-        return None
+        raise RuntimeError(f"Error running scattering backend from SCAT_DIR='{SCAT_DIR}'") from e
     
-    result = np.loadtxt(f'{file_name}')
     if clean_files:
-        subprocess.run(['rm', 'options.dat'])
-        subprocess.run(['rm', 'basis.dat'])
-        subprocess.run(['rm', 'MOs.dat'])
-        subprocess.run(['rm', '1rdm_' + file_name + '.txt'])
-        subprocess.run(['rm', '2rdm_' + file_name + '.txt'])
-        subprocess.run(['rm', '2rdm.txt'])
-        subprocess.run(['rm', file_name + '.molden'])
-        subprocess.run(['rm', file_name])
+        _cleanup_scattering_files(file_name)
     
     return result
 
@@ -353,21 +481,14 @@ def run_scattering_zcotr(
     )
     try:
         print(f'Running scattering with zcotr backend with type {type} and file {file_name}')
-        os.system(f'LD_LIBRARY_PATH=/opt/intel/oneapi/vpl/2022.0.0/lib:/opt/intel/oneapi/tbb/2021.5.1/env/../lib/intel64/gcc4.8:/opt/intel/oneapi/mpi/2021.5.1//libfabric/lib:/opt/intel/oneapi/mpi/2021.5.1//lib/release:/opt/intel/oneapi/mpi/2021.5.1//lib:/opt/intel/oneapi/mkl/2022.0.2/lib/intel64:/opt/intel/oneapi/itac/2021.5.0/slib:/opt/intel/oneapi/ipp/2021.5.2/lib/intel64:/opt/intel/oneapi/ippcp/2021.5.1/lib/intel64:/opt/intel/oneapi/ipp/2021.5.2/lib/intel64:/opt/intel/oneapi/dnnl/2022.0.2/cpu_dpcpp_gpu_dpcpp/lib:/opt/intel/oneapi/debugger/2021.5.0/gdb/intel64/lib:/opt/intel/oneapi/debugger/2021.5.0/libipt/intel64/lib:/opt/intel/oneapi/debugger/2021.5.0/dep/lib:/opt/intel/oneapi/dal/2021.5.3/lib/intel64:/opt/intel/oneapi/compiler/2022.0.2/linux/lib:/opt/intel/oneapi/compiler/2022.0.2/linux/lib/x64:/opt/intel/oneapi/compiler/2022.0.2/linux/lib/oclfpga/host/linux64/lib:/opt/intel/oneapi/compiler/2022.0.2/linux/compiler/lib/intel64_lin:/opt/intel/oneapi/ccl/2021.5.1/lib/cpu_gpu_dpcpp:{ZCOTR_EXE} > {log_file}')
+        executable = _resolve_executable(ZCOTR_EXE, 'Main2.exe')
+        _run_scattering_executable(executable, log_file)
+        result = _load_scattering_result(file_name, executable, log_file)
     except Exception as e:
-        print(f"Error running ZCotr Main2.exe: {e}")
-        return None
+        raise RuntimeError(f"Error running zcotr backend from ZCOTR_EXE='{ZCOTR_EXE}'") from e
     
-    result = np.loadtxt(f'{file_name}')
     if clean_files:
-        subprocess.run(['rm', 'options.dat'])
-        subprocess.run(['rm', 'basis.dat'])
-        subprocess.run(['rm', 'MOs.dat'])
-        subprocess.run(['rm', '1rdm_' + file_name + '.txt'])
-        subprocess.run(['rm', '2rdm_' + file_name + '.txt'])
-        subprocess.run(['rm', '2rdm.txt'])
-        subprocess.run(['rm', file_name + '.molden'])
-        subprocess.run(['rm', file_name])
+        _cleanup_scattering_files(file_name)
     
     return result
 
