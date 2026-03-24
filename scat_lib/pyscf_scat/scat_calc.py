@@ -14,11 +14,13 @@ from . import make_zcontraction_files
 
 
 SCAT_DIR = os.environ.get('SCAT_DIR', '/u/ajmk/wadh6737/PyXSCAT_Eirik/src')
-ZCOTR_EXE = os.environ.get('SCAT_DIR_ZCOTR', '/u/ajmk/chem1721/PyXSCAT_last_commit/PyXSCAT/src/Main2.exe')
+ZCOTR_EXE = os.environ.get('ZCOTR_EXE', '/u/ajmk/chem1721/PyXSCAT_last_commit/PyXSCAT/src/Main2.exe')
 
 
 if SCAT_DIR not in sys.path:
     sys.path.append(SCAT_DIR)
+if ZCOTR_EXE not in sys.path:
+    sys.path.append(ZCOTR_EXE)
 
 from . import ci_to_2rdm
 from . import makerdm 
