@@ -187,7 +187,7 @@ def prepare_zcotr_files(
         cutoffmd = 1e-20,
         state1 = 1,
         state2 = 1,
-        path = None
+        path = './'
         ):
     """
     Prepares the files needed to run scattering with zcotr backend.
