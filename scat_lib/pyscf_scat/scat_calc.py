@@ -496,7 +496,7 @@ def run_scattering_zcotr(
 
 
 def run_scattering_pyscf(
-        casscf,
+        pyscf_obj,
         mf,
         file_name,
         orbital_type = 'HF',
@@ -519,8 +519,9 @@ def run_scattering_pyscf(
 
     Parameters
     ----------
-    casscf : pyscf.mcscf.CASSCF
-        The CASSCF object containing the CI coefficients and FCISolver.
+    pyscf_obj : pyscf.mcscf.CASSCF or pyscf.cc.ccsd.CCSD
+        The PySCF wavefunction object used to build RDMs.
+        Supported inputs are CASSCF/DMRG-SCF and CCSD objects.
     mf : pyscf.scf.hf.SCF
         The mean-field object containing the molecular information.
     file_name : str
@@ -559,33 +560,52 @@ def run_scattering_pyscf(
         An array of intensity values at the corresponding q
     """
 
-    if backend == 'zcotr':
-        if isinstance(casscf.fcisolver, DMRGCI):
-            _ci = casscf.ci
-            nelecas = casscf.nelecas
-            ncas = casscf.ncas
-            ncore = casscf.ncore
-            nmo = casscf.mo_coeff.shape[1]
-            dm1, dm2 = casscf.fcisolver.make_rdm12(0, casscf.ncas, casscf.nelecas)
-        
+    is_casscf_like = hasattr(pyscf_obj, 'fcisolver') and hasattr(pyscf_obj, 'ci')
+    is_ccsd_like = hasattr(pyscf_obj, 'make_rdm1') and hasattr(pyscf_obj, 'make_rdm2')
+
+    if not (is_casscf_like or is_ccsd_like):
+        raise TypeError(
+            "Unsupported pyscf_obj type. Expected a CASSCF/DMRG-SCF object or a CCSD object."
+        )
+
+    if is_casscf_like:
+        if isinstance(pyscf_obj.fcisolver, DMRGCI):
+            _ci = pyscf_obj.ci
+            nelecas = pyscf_obj.nelecas
+            ncas = pyscf_obj.ncas
+            ncore = pyscf_obj.ncore
+            nmo = pyscf_obj.mo_coeff.shape[1]
+            dm1, dm2 = pyscf_obj.fcisolver.make_rdm12(0, pyscf_obj.ncas, pyscf_obj.nelecas)
         else:
-            _ci = casscf.ci
-            nelecas = casscf.nelecas
-            ncas = casscf.ncas
-            ncore = casscf.ncore
-            nmo = casscf.mo_coeff.shape[1]
-            casdm1, casdm2 = casscf.fcisolver.make_rdm12(_ci, ncas, nelecas)
+            _ci = pyscf_obj.ci
+            nelecas = pyscf_obj.nelecas
+            ncas = pyscf_obj.ncas
+            ncore = pyscf_obj.ncore
+            nmo = pyscf_obj.mo_coeff.shape[1]
+            casdm1, casdm2 = pyscf_obj.fcisolver.make_rdm12(_ci, ncas, nelecas)
             dm1, dm2 = makerdm._make_rdm12_on_mo(casdm1, casdm2, ncore, ncas, nmo)
+    else:
+        try:
+            dm1 = pyscf_obj.make_rdm1(ao_repr=False)
+            dm2 = pyscf_obj.make_rdm2(ao_repr=False)
+        except TypeError:
+            dm1 = pyscf_obj.make_rdm1()
+            dm2 = pyscf_obj.make_rdm2()
+        nmo = dm1.shape[0]
+
+    if backend == 'zcotr':
         
         if orbital_type == 'HF':
             tools.molden.dump_scf(mf, f'{file_name}.molden')
         elif orbital_type == 'CASSCF':
-            tools.molden.from_mcscf(casscf, f'{file_name}.molden')
+            if not is_casscf_like:
+                raise ValueError("orbital_type='CASSCF' requires a CASSCF/DMRG-SCF pyscf_obj.")
+            tools.molden.from_mcscf(pyscf_obj, f'{file_name}.molden')
         
         pthresh=1e-17
 
 
-        dm3 = mo2ao.create_Zcotr(mf, casscf.mol, dm2)
+        dm3 = mo2ao.create_Zcotr(mf, mf.mol, dm2)
         dm3.tofile(f'2rdmAO')
 
         result = run_scattering_zcotr(file_name,
@@ -610,27 +630,9 @@ def run_scattering_pyscf(
         if orbital_type == 'HF':
             tools.molden.dump_scf(mf, f'{file_name}.molden')
         elif orbital_type == 'CASSCF':
-            tools.molden.from_mcscf(casscf, f'{file_name}.molden')
-
-        if isinstance(casscf.fcisolver, DMRGCI):
-            _ci = casscf.ci
-            nelecas = casscf.nelecas
-            ncas = casscf.ncas
-            ncore = casscf.ncore
-            nmo = casscf.mo_coeff.shape[1]
-            dm1, dm2 = casscf.fcisolver.make_rdm12(0, casscf.ncas, casscf.nelecas)
-        
-        else:
-            _ci = casscf.ci
-            nelecas = casscf.nelecas
-            ncas = casscf.ncas
-            ncore = casscf.ncore
-            nmo = casscf.mo_coeff.shape[1]
-            casdm1, casdm2 = casscf.fcisolver.make_rdm12(_ci, ncas, nelecas)
-            dm1, dm2 = makerdm._make_rdm12_on_mo(casdm1, casdm2, ncore, ncas, nmo)
-
-        casdm1, casdm2 = casscf.fcisolver.make_rdm12(_ci, ncas, nelecas)
-        dm1, dm2 = makerdm._make_rdm12_on_mo(casdm1, casdm2, ncore, ncas, nmo)
+            if not is_casscf_like:
+                raise ValueError("orbital_type='CASSCF' requires a CASSCF/DMRG-SCF pyscf_obj.")
+            tools.molden.from_mcscf(pyscf_obj, f'{file_name}.molden')
 
         no_mos = dm1.shape[0]
 
