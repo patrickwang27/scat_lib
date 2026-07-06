@@ -12,6 +12,15 @@ What’s Included
 - Electron form factors via Mott–Bethe (with optional relativistic scaling)
 - Minimal structure/atom-site classes and structure-factor evaluators
 
+.. note::
+
+   The bundled ``data/isfl.txt`` table (incoherent scattering functions of
+   Hubbell *et al.*, J. Phys. Chem. Ref. Data **4**, 471 (1975)) had six
+   transcription typos corrected against the primary source (H at
+   s = 0.7/0.8, Pd at 0.6, Te at 0.1/0.7, I at 0.5). Tabulated
+   ``Z - f_x(s)`` values and Mott–Bethe electron form factors for those
+   elements change accordingly.
+
 Quick Start
 -----------
 

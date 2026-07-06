@@ -1,17 +1,20 @@
 from __future__ import annotations
-from scipy.interpolate import CubicSpline
-from scipy.special import spherical_jn
 import os
 import re
+import warnings
+from collections import Counter
 from functools import lru_cache
-from typing import Callable, List, Mapping, Optional, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
 import numpy as np
+from scipy.interpolate import PchipInterpolator
+from scipy.special import spherical_jn
+
 from .cm import CromerMannTable, fx_cromer_mann
 from .constants import PI
 from ..iam.constants import ATOMIC_NUMBERS
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-_INELASTIC_GRID = np.array([0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00, 1.50, 2.00], dtype=float)
 _LABEL_BASE_RE = re.compile(r"^([A-Z][a-z]?)")
 _LABEL_ION_RE = re.compile(r"^([A-Z][a-z]?)([0-9]*)([+-])$")
 
@@ -27,9 +30,22 @@ def _resolve_label(label: str, ion_map: Optional[Mapping[str, str]] = None) -> s
 
 
 def _base_element(label: str) -> str:
-    """Extract base element symbol from a label (e.g., 'Cval' -> 'C', 'Fe2+' -> 'Fe')."""
+    """Extract the base element symbol from a label (e.g. 'Cval' -> 'C',
+    'Siv' -> 'Si', 'Fe2+' -> 'Fe').
+
+    The leading ``[A-Z][a-z]?`` match is greedy, so a valence/custom label such
+    as ``'Cval'`` first yields ``'Cv'``. When that two-letter candidate is not a
+    real element but its first letter is, fall back to the single-letter symbol
+    so labels like ``'Cval'`` resolve to carbon rather than the non-element
+    ``'Cv'``. Genuine two-letter elements ('Fe', 'Si') are left untouched.
+    """
     m = _LABEL_BASE_RE.match(label)
-    return m.group(1) if m else label
+    if not m:
+        return label
+    cand = m.group(1)
+    if len(cand) == 2 and cand not in ATOMIC_NUMBERS and cand[0] in ATOMIC_NUMBERS:
+        return cand[0]
+    return cand
 
 
 def _parse_charge(label: str) -> int:
@@ -42,8 +58,19 @@ def _parse_charge(label: str) -> int:
     return magnitude if m.group(3) == "+" else -magnitude
 
 
+def _effective_electron_count(label: str, ion_map: Optional[Mapping[str, str]] = None) -> Optional[float]:
+    """Return the exact electron count Z - charge for a label, or None if the
+    base element is unknown."""
+    resolved = _resolve_label(label, ion_map)
+    Z = ATOMIC_NUMBERS.get(_base_element(resolved))
+    if Z is None:
+        return None
+    return float(Z - _parse_charge(resolved))
+
+
 def _electron_count(label: str, resolved: str, base: str, cm: Optional[CromerMannTable], charge: Optional[int] = None) -> float:
-    """Estimate electron count for a label using CM coefficients if available, else atomic number and charge."""
+    """Legacy electron-count estimate used when ``normalize=False``: prefer the
+    Cromer-Mann f(0) if the label is tabulated, else fall back to Z - charge."""
     if cm and label in cm:
         coeffs = cm.get(label)
         return float(np.sum(coeffs.a) + coeffs.c)
@@ -58,32 +85,90 @@ def _electron_count(label: str, resolved: str, base: str, cm: Optional[CromerMan
 
 
 @lru_cache(maxsize=1)
-def _load_inelastic_table() -> Mapping[str, np.ndarray]:
-    """Load inelastic (Z - f) data from isfl.txt."""
-    table: dict[str, np.ndarray] = {}
+def _load_inelastic_data() -> Tuple[np.ndarray, Mapping[str, np.ndarray]]:
+    """Load the incoherent scattering function table from isfl.txt.
+
+    Returns the s grid parsed from the header line and a mapping
+    element -> S(s) values on that grid. The data are validated on load:
+    every row must have one value per grid point, and S(s) must be
+    non-negative and non-decreasing in s.
+    """
     path = os.path.join(DATA_DIR, "isfl.txt")
+    table: dict[str, np.ndarray] = {}
     with open(path, "r", encoding="utf-8") as f:
-        header = f.readline()
-        for line in f:
+        header = f.readline().split()
+        try:
+            grid = np.array([float(x) for x in header[1:]], dtype=float)
+        except ValueError as exc:
+            raise ValueError(f"Malformed header in {path}: {' '.join(header)!r}") from exc
+        if grid.size < 2 or grid[0] <= 0.0 or np.any(np.diff(grid) <= 0.0):
+            raise ValueError(f"Header of {path} must list strictly increasing positive s values.")
+        for lineno, line in enumerate(f, start=2):
             line = line.strip()
             if not line:
                 continue
             parts = line.split()
             symbol = parts[0]
-            vals = np.array([float(x) for x in parts[1:]], dtype=float)
+            try:
+                vals = np.array([float(x) for x in parts[1:]], dtype=float)
+            except ValueError as exc:
+                raise ValueError(f"Malformed row for '{symbol}' at {path}:{lineno}") from exc
+            if vals.size != grid.size:
+                raise ValueError(
+                    f"Row for '{symbol}' at {path}:{lineno} has {vals.size} values; expected {grid.size}."
+                )
+            if symbol in table:
+                raise ValueError(f"Duplicate element '{symbol}' at {path}:{lineno}.")
+            if np.any(vals < 0.0):
+                raise ValueError(f"Negative S(s) value for '{symbol}' at {path}:{lineno}.")
+            if np.any(np.diff(vals) < 0.0):
+                warnings.warn(
+                    f"S(s) for '{symbol}' in {path} is not monotonically increasing; "
+                    "the table may contain a transcription error."
+                )
             table[symbol] = vals
-    return table
+    return grid, table
 
 
-def _inelastic_lookup(base_symbol: str, s: float) -> Optional[float]:
-    """Return interpolated Z - f from the tabulated data if possible."""
-    table = _load_inelastic_table()
-    data = table.get(base_symbol)
-    if data is None:
+@lru_cache(maxsize=None)
+def _inelastic_interpolator(base_symbol: str) -> Optional[Callable[[np.ndarray], np.ndarray]]:
+    """Return S(s) for a tabulated element as a smooth function of s >= 0, or
+    None if the element is not in the table.
+
+    A monotone (PCHIP) interpolant is built through (0, 0) - the exact
+    incoherent sum rule S(0) = 0 - and the tabulated points. Beyond the last
+    tabulated s the curve continues with a C^1 exponential approach to the
+    S(s -> inf) = Z asymptote, so there is no discontinuity at either end of
+    the tabulated range.
+    """
+    grid, table = _load_inelastic_data()
+    vals = table.get(base_symbol)
+    if vals is None:
         return None
-    if _INELASTIC_GRID[0] <= s <= _INELASTIC_GRID[-1]:
-        return float(CubicSpline(_INELASTIC_GRID, data)(s))
-    return None
+    knots = np.concatenate(([0.0], grid))
+    svals = np.concatenate(([0.0], vals))
+    pchip = PchipInterpolator(knots, svals, extrapolate=False)
+    s_max = float(knots[-1])
+    S_max = float(svals[-1])
+    Z = float(ATOMIC_NUMBERS.get(base_symbol, S_max))
+    gap = Z - S_max
+    slope = max(float(pchip.derivative()(s_max)), 0.0)
+
+    def S_of_s(s: np.ndarray) -> np.ndarray:
+        s = np.abs(np.asarray(s, dtype=float))
+        out = np.asarray(pchip(np.minimum(s, s_max)), dtype=float)
+        above = s > s_max
+        if np.any(above):
+            if gap > 1e-9:
+                # S(s) = Z - (Z - S_max) exp(-k (s - s_max)) with k matching
+                # the interpolant's slope at s_max: continuous and C^1.
+                out[above] = Z - gap * np.exp(-(slope / gap) * (s[above] - s_max))
+            else:
+                out[above] = min(S_max, Z)
+        return np.clip(out, 0.0, None)
+
+    return S_of_s
+
 
 def _sinc(x: np.ndarray) -> np.ndarray:
     """Return sinc(x) = sin(x)/x, handling x=0 case."""
@@ -93,6 +178,7 @@ def _sinc(x: np.ndarray) -> np.ndarray:
     xs = x[~small]
     out[~small] = np.sin(xs)/xs
     return out
+
 
 def _fx_from_backend(backend: str | FXFunc, cm: Optional[CromerMannTable] = None, ion_map: Optional[Mapping[str, str]] = None) -> FXFunc:
     """Return a function fx(symbol: str, s: float) -> float according to backend."""
@@ -109,12 +195,166 @@ def _fx_from_backend(backend: str | FXFunc, cm: Optional[CromerMannTable] = None
         raise ValueError(f"Unknown backend '{backend}'. Use 'affl' or 'xraydb' or pass a callable.")
 
 
+def _to_float(value) -> float:
+    """Coerce a scalar-like fx return (float, 0-d, or size-1 array) to a float."""
+    arr = np.asarray(value, dtype=float)
+    return float(arr.reshape(-1)[0])
+
+
+def _eval_fx(fx: FXFunc, symbol: str, s: np.ndarray) -> np.ndarray:
+    """Evaluate fx(symbol, s) over an array of s values.
+
+    The documented contract is a scalar function ``fx(symbol, s) -> float``. Both
+    built-in backends also accept arrays, so a single vectorised call is tried
+    first and accepted only if it has the right shape *and* agrees with scalar
+    probes at the first and last grid points; the probes guard against a callable
+    that ignores s and returns a constant array of the right length. Otherwise
+    every point is evaluated individually, which supports scalar-only callables.
+    A callable that works on neither array nor scalar input raises a clear error
+    rather than a cryptic one.
+    """
+    s = np.asarray(s, dtype=float)
+    if s.size == 0:
+        return s.copy()
+    flat = s.reshape(-1)
+    probe_idx = (0,) if flat.size == 1 else (0, flat.size - 1)
+    try:
+        probes = {i: _to_float(fx(symbol, float(flat[i]))) for i in probe_idx}
+        scalar_ok = True
+    except Exception:
+        probes = None
+        scalar_ok = False
+    try:
+        vals = np.asarray(fx(symbol, s), dtype=float)
+        vflat = vals.reshape(-1)
+        if vals.shape == s.shape and (probes is None or
+                all(np.isclose(vflat[i], p, rtol=1e-9, atol=1e-12) for i, p in probes.items())):
+            return vals
+    except Exception:
+        pass
+    if not scalar_ok:
+        raise TypeError(
+            f"Form-factor backend failed for symbol {symbol!r} on both array and scalar input."
+        )
+    return np.array([_to_float(fx(symbol, float(sk))) for sk in flat],
+                    dtype=float).reshape(s.shape)
+
+
+def _form_factors(fx: FXFunc, labels: Sequence[str], s: np.ndarray, *,
+                  normalize: bool, ion_map: Optional[Mapping[str, str]] = None
+                  ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
+    """Evaluate form factors for every unique label over the s grid.
+
+    Returns (F, e0) where F maps label -> f(s) array and e0 maps label -> the
+    value of the (possibly normalised) form factor at s = 0.
+
+    With ``normalize=True`` each form factor is rescaled by
+    (Z - charge) / f(0) so that f(0) equals the electron count exactly. The
+    tabulated parameterisations (Cromer-Mann, Waasmaier-Kirfel/xraydb) are
+    least-squares fits whose value at s = 0 misses Z by up to ~0.06 e-, which
+    otherwise breaks the elastic sum rule I(0) = N_e^2.
+    """
+    F: Dict[str, np.ndarray] = {}
+    e0: Dict[str, float] = {}
+    for sym in sorted(set(labels)):
+        vals = _eval_fx(fx, sym, s)
+        if normalize:
+            f0 = float(_eval_fx(fx, sym, np.array([0.0]))[0])
+            n_e = _effective_electron_count(sym, ion_map)
+            scale = 1.0
+            if n_e is None:
+                warnings.warn(
+                    f"Cannot determine the electron count for label '{sym}'; "
+                    "its form factor is left unnormalised."
+                )
+                n_e = f0
+            elif not np.isfinite(f0) or f0 <= 0.0:
+                warnings.warn(f"Form factor for '{sym}' is {f0} at s=0; leaving it unnormalised.")
+                n_e = f0
+            else:
+                scale = n_e / f0
+                if abs(scale - 1.0) > 0.02:
+                    warnings.warn(
+                        f"f(0) for '{sym}' deviates from its electron count "
+                        f"({f0:.4f} vs {n_e:.1f}); check the form-factor data."
+                    )
+            F[sym] = vals * scale
+            e0[sym] = float(n_e)
+        else:
+            F[sym] = vals
+    return F, e0
+
+
+def _resolve_inelastic_mode(inelastic: bool | str, backend: str | FXFunc) -> Optional[str]:
+    """Validate the ``inelastic`` argument and resolve it to None/'table'/'xraydb'."""
+    if not inelastic:
+        return None
+    if inelastic is True:
+        mode = 'auto'
+    elif isinstance(inelastic, str):
+        mode = inelastic.lower()
+    else:
+        raise TypeError("inelastic must be False, True, or one of {'table','xraydb','auto'}.")
+    if mode == 'auto':
+        if isinstance(backend, str) and backend.lower() == 'xraydb':
+            mode = 'xraydb'
+        else:
+            mode = 'table'
+    if mode not in ('table', 'xraydb'):
+        raise ValueError("inelastic mode must be 'table', 'xraydb', 'auto', True, or False.")
+    return mode
+
+
+def _inelastic_intensity(labels: Sequence[str], s: np.ndarray, F: Mapping[str, np.ndarray],
+                         e0: Mapping[str, float], *, mode: str,
+                         ion_map: Optional[Mapping[str, str]], normalize: bool,
+                         cm: Optional[CromerMannTable]) -> np.ndarray:
+    """Sum the atomic incoherent scattering functions S(s) over all atoms.
+
+    In 'table' mode neutral atoms use the tabulated Waller-Hartree S(s)
+    (monotone interpolation, exact S(0) = 0, smooth tail to the Z asymptote).
+    Ions and elements missing from the table - and everything in 'xraydb'
+    mode - use the crude approximation S(s) = N_e - f(s), clipped at zero.
+    """
+    counts = Counter(labels)
+    I_inel = np.zeros_like(s)
+    cm_for_fallback = None
+    if not normalize and mode == 'table':
+        cm_for_fallback = cm or CromerMannTable()
+    for raw, n_atoms in counts.items():
+        resolved = _resolve_label(raw, ion_map)
+        base = _base_element(resolved)
+        charge = _parse_charge(resolved)
+        contrib: Optional[np.ndarray] = None
+        if mode == 'table' and charge == 0:
+            S_of_s = _inelastic_interpolator(base)
+            if S_of_s is not None:
+                contrib = S_of_s(s)
+        if contrib is None:
+            if normalize:
+                e_count = e0[raw]
+            else:
+                e_count = _electron_count(raw, resolved, base, cm_for_fallback, charge=charge)
+            contrib = np.clip(e_count - F[raw], 0.0, None)
+        I_inel += n_atoms * contrib
+    return I_inel
+
+
+def _validate_inputs(positions: np.ndarray, labels: List[str], q: np.ndarray) -> None:
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError(f"positions must have shape (N, 3); got {positions.shape}.")
+    if len(labels) != positions.shape[0]:
+        raise ValueError(f"Got {len(labels)} labels for {positions.shape[0]} atoms.")
+    if q.ndim != 1:
+        raise ValueError(f"q must be a 1D array; got shape {q.shape}.")
+
+
 def intensity_components_xray(positions: np.ndarray, labels: List[str], q: np.ndarray, cm: Optional[CromerMannTable] = None,
                               *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None,
-                              inelastic: bool | str = False) -> Tuple[np.ndarray, ...]:
+                              inelastic: bool | str = False, normalize: bool = True) -> Tuple[np.ndarray, ...]:
     """
     Return total, self, and cross I(q) from atomic positions and labels.
-    
+
     Parameters
     ----------
     positions : np.ndarray
@@ -141,8 +381,15 @@ def intensity_components_xray(positions: np.ndarray, labels: List[str], q: np.nd
         Controls computation of the inelastic (incoherent) scattering component.
         False (default) disables it. True selects 'auto' mode (use tabulated data
         when available, otherwise backend-specific fallback). Explicit strings
-        'table' or 'xraydb' force the source for Z - f lookups.
-    
+        'table' or 'xraydb' force the source for the atomic S(s) lookups.
+    normalize : bool, optional
+        When True (default), rescale each atomic form factor by
+        (Z - charge) / f(0) so that f(0) equals the electron count exactly.
+        This enforces the elastic sum rule I_total(0) = N_e^2 (and
+        I_inelastic(0) = 0), which the raw fitted parameterisations miss by
+        up to ~0.06 e- per atom. Set False to use the tabulated
+        parameterisations unmodified.
+
     Returns
     -------
     Tuple[np.ndarray, ...]
@@ -152,82 +399,36 @@ def intensity_components_xray(positions: np.ndarray, labels: List[str], q: np.nd
     """
     R = np.asarray(positions, float)
     q = np.asarray(q, float)
-    N = R.shape[0]
-    diffs = R[:,None,:] - R[None,:,:]
-    rij = np.linalg.norm(diffs, axis=2)  # (N,N)
-
-    I_tot = np.zeros(q.shape, float)
-    I_self = np.zeros(q.shape, float)
-    I_cross = np.zeros(q.shape, float)
-    include_inelastic = bool(inelastic)
-    inelastic_mode: Optional[str]
-    if not include_inelastic:
-        inelastic_mode = None
-    else:
-        if inelastic is True:
-            inelastic_mode = 'auto'
-        elif isinstance(inelastic, str):
-            inelastic_mode = inelastic.lower()
-        else:
-            raise TypeError("inelastic must be False, True, or one of {'table','xraydb','auto'}.")
-        if inelastic_mode == 'auto':
-            if isinstance(backend, str) and backend.lower() == 'xraydb':
-                inelastic_mode = 'xraydb'
-            else:
-                inelastic_mode = 'table'
-        if inelastic_mode not in ('table', 'xraydb'):
-            raise ValueError("inelastic mode must be 'table', 'xraydb', 'auto', True, or False.")
+    labels = list(labels)
+    _validate_inputs(R, labels, q)
+    inelastic_mode = _resolve_inelastic_mode(inelastic, backend)
     if isinstance(backend, str) and backend.lower() in ('affl', 'cm', 'cromer-mann'):
         cm = cm or CromerMannTable()
     fx = _fx_from_backend(backend, cm=cm, ion_map=ion_map)
-    I_inelastic = np.zeros(q.shape, float) if include_inelastic else None
-    resolved_labels = [_resolve_label(lbl, ion_map=ion_map) for lbl in labels] if include_inelastic else []
-    base_labels = [_base_element(lbl) for lbl in resolved_labels] if include_inelastic else []
-    electron_counts: dict[str, float] = {}
-    charges_by_label: dict[str, int] = {}
-    if include_inelastic:
-        cm_for_inelastic = None
-        if inelastic_mode == 'table':
-            cm_for_inelastic = cm or CromerMannTable()
-        for raw, resolved, base in zip(labels, resolved_labels, base_labels):
-            charge = _parse_charge(resolved)
-            charges_by_label[raw] = charge
-            electron_counts[raw] = _electron_count(raw, resolved, base, cm_for_inelastic, charge=charge)
 
-    # unique labels to avoid repeated lookups at each q
-    labels = list(labels)
-    uniq = sorted(set(labels))
-    # For each q, compute f0 for each unique symbol once
+    s = q / (4.0 * PI)
+    F, e0 = _form_factors(fx, labels, s, normalize=normalize, ion_map=ion_map)
+    W = np.array([F[lbl] for lbl in labels], dtype=float)  # (N, nq)
+    I_self = np.einsum('ak,ak->k', W, W)
+
+    diffs = R[:, None, :] - R[None, :, :]
+    rij = np.linalg.norm(diffs, axis=2)  # (N,N)
+    I_tot = np.empty_like(q)
     for k, qk in enumerate(q):
-        s = qk / (4.0*PI)
-        f_by_sym = {sym: float(fx(sym, s)) for sym in uniq}
-        w = np.array([f_by_sym[sym] for sym in labels], float)
-        I_self[k] = float(np.sum(w*w))
-        S = _sinc(qk * rij)
-        I_tot[k] = float(w @ (S @ w))
-        I_cross[k] = I_tot[k] - I_self[k]
-        if include_inelastic and I_inelastic is not None:
-            if inelastic_mode == 'table':
-                total_inelastic = 0.0
-                for raw, base in zip(labels, base_labels):
-                    use_table = charges_by_label.get(raw, 0) == 0
-                    z_minus = _inelastic_lookup(base, s) if use_table else None
-                    if z_minus is None:
-                        z_minus = electron_counts[raw] - f_by_sym[raw]
-                    total_inelastic += max(0.0, z_minus)
-                I_inelastic[k] = total_inelastic
-            else:  # xraydb
-                total_inelastic = 0.0
-                for raw in labels:
-                    total_inelastic += max(0.0, electron_counts[raw] - f_by_sym[raw])
-                I_inelastic[k] = total_inelastic
-    if include_inelastic and I_inelastic is not None:
-        return I_tot, I_self, I_cross, I_inelastic
-    return I_tot, I_self, I_cross
+        w = W[:, k]
+        I_tot[k] = w @ (_sinc(qk * rij) @ w)
+    I_cross = I_tot - I_self
+
+    if inelastic_mode is None:
+        return I_tot, I_self, I_cross
+    I_inelastic = _inelastic_intensity(labels, s, F, e0, mode=inelastic_mode,
+                                       ion_map=ion_map, normalize=normalize, cm=cm)
+    return I_tot, I_self, I_cross, I_inelastic
+
 
 def intensity_molecular_xray(positions: np.ndarray, labels: List[str], q: np.ndarray, cm: Optional[CromerMannTable] = None,
                              *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None,
-                             inelastic: bool | str = False):
+                             inelastic: bool | str = False, normalize: bool = True):
     """
     Return I(q) from atomic positions and labels.
 
@@ -255,16 +456,20 @@ def intensity_molecular_xray(positions: np.ndarray, labels: List[str], q: np.nda
         Only used if backend is 'xraydb'. Default is None.
     inelastic : bool | str, optional
         Same semantics as in :func:`intensity_components_xray`.
+    normalize : bool, optional
+        Same semantics as in :func:`intensity_components_xray`.
 
     Returns
     -------
     np.ndarray or Tuple[np.ndarray, np.ndarray]
-        If `inelastic` is falsy, returns the molecular intensity array.
-        Otherwise, returns a tuple `(I_total, I_inelastic)`.
+        If `inelastic` is falsy, returns the molecular (elastic) intensity array.
+        Otherwise, returns a tuple `(I_total, I_inelastic)` where `I_total` is
+        the elastic molecular intensity.
     """
-    comps = intensity_components_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map, inelastic=inelastic)
+    comps = intensity_components_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map,
+                                      inelastic=inelastic, normalize=normalize)
     if inelastic:
-        return comps[0] + comps[-1]
+        return comps[0], comps[-1]
     return comps[0]
 
 # Y_2^0 normalisation of the anisotropic component: n * P_2(cos theta) = Y_2^0(theta)
@@ -272,7 +477,8 @@ _Y20_NORM = np.sqrt(5.0 / PI) / 2.0
 
 
 def intensity_j2_xray(positions: np.ndarray, labels: List[str], q: np.ndarray, cm: Optional[CromerMannTable] = None,
-                      *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None) -> np.ndarray:
+                      *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None,
+                      normalize: bool = True) -> np.ndarray:
     """
     Return the anisotropic j2 component of the elastic scattering, I_j2(q).
 
@@ -310,6 +516,10 @@ def intensity_j2_xray(positions: np.ndarray, labels: List[str], q: np.ndarray, c
         Optional mapping of labels to standard symbols,
         e.g., {'Cval':'C', 'Siv':'Si4+'}.
         Only used if backend is 'xraydb'. Default is None.
+    normalize : bool, optional
+        Same semantics as in :func:`intensity_components_xray`; the same
+        form factors are used for all components, so keep the setting
+        consistent between the j0 and j2 parts of one calculation.
 
     Returns
     -------
@@ -318,6 +528,8 @@ def intensity_j2_xray(positions: np.ndarray, labels: List[str], q: np.ndarray, c
     """
     R = np.asarray(positions, float)
     q = np.asarray(q, float)
+    labels = list(labels)
+    _validate_inputs(R, labels, q)
     diffs = R[:,None,:] - R[None,:,:]
     rij = np.linalg.norm(diffs, axis=2)  # (N,N)
     # P_2(cos theta_ab) directly from the normalised z-component of r_ab.
@@ -331,21 +543,20 @@ def intensity_j2_xray(positions: np.ndarray, labels: List[str], q: np.ndarray, c
         cm = cm or CromerMannTable()
     fx = _fx_from_backend(backend, cm=cm, ion_map=ion_map)
 
-    labels = list(labels)
-    uniq = sorted(set(labels))
-    I_j2 = np.zeros(q.shape, float)
+    s = q / (4.0 * PI)
+    F, _ = _form_factors(fx, labels, s, normalize=normalize, ion_map=ion_map)
+    W = np.array([F[lbl] for lbl in labels], dtype=float)  # (N, nq)
+    I_j2 = np.empty_like(q)
     for k, qk in enumerate(q):
-        s = qk / (4.0*PI)
-        f_by_sym = {sym: float(fx(sym, s)) for sym in uniq}
-        w = np.array([f_by_sym[sym] for sym in labels], float)
+        w = W[:, k]
         K = spherical_jn(2, qk * rij) * P2
-        I_j2[k] = _Y20_NORM * float(w @ (K @ w))
+        I_j2[k] = _Y20_NORM * (w @ (K @ w))
     return I_j2
 
 
 def intensity_pyscf(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTable] = None,
                      *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None,
-                     inelastic: bool | str = False):
+                     inelastic: bool | str = False, normalize: bool = True):
     """
     Return I(q) from a PySCF gto.Mole object.
 
@@ -355,7 +566,7 @@ def intensity_pyscf(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTable
         PySCF molecule with atom positions and labels.
     q : np.ndarray
         1D array of q values (in 1/Angstrom).
-    cm, backend, ion_map, inelastic :
+    cm, backend, ion_map, inelastic, normalize :
         Same semantics as :func:`intensity_molecular_xray`.
 
     Returns
@@ -365,11 +576,13 @@ def intensity_pyscf(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTable
     """
     from .pyscf_bridge import positions_and_labels_from_mole
     positions, labels = positions_and_labels_from_mole(mol)
-    return intensity_molecular_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map, inelastic=inelastic)
+    return intensity_molecular_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map,
+                                    inelastic=inelastic, normalize=normalize)
 
 
 def intensity_pyscf_j2(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTable] = None,
-                       *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None) -> np.ndarray:
+                       *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None,
+                       normalize: bool = True) -> np.ndarray:
     """
     Return the anisotropic j2 elastic component I_j2(q) from a PySCF gto.Mole object.
 
@@ -379,7 +592,7 @@ def intensity_pyscf_j2(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTa
         PySCF molecule with atom positions and labels.
     q : np.ndarray
         1D array of q values (in 1/Angstrom).
-    cm, backend, ion_map :
+    cm, backend, ion_map, normalize :
         Same semantics as :func:`intensity_j2_xray`.
 
     Returns
@@ -389,6 +602,5 @@ def intensity_pyscf_j2(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTa
     """
     from .pyscf_bridge import positions_and_labels_from_mole
     positions, labels = positions_and_labels_from_mole(mol)
-    return intensity_j2_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map)
-
-    
+    return intensity_j2_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map,
+                             normalize=normalize)

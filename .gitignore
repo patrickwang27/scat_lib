@@ -1,6 +1,9 @@
 *.dat
 *.log
 *test*
+# ...but keep the versioned test suite (the broad *test* rule above would hide it)
+!tests/
+!tests/**
 __pycache__/*
 *.pyc
 *.ipynb
