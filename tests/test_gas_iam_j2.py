@@ -45,7 +45,11 @@ def _xelj2_reference(positions, labels, q, cm):
 
 
 def test_matches_mathematica_reference():
-    """Vectorised implementation reproduces the literal Mathematica loop."""
+    """Vectorised implementation reproduces the literal Mathematica loop.
+
+    The reference uses the raw Cromer-Mann form factors, so the f(0) = Z
+    normalisation is disabled for the comparison.
+    """
     rng = np.random.default_rng(42)
     positions = rng.uniform(-2.0, 2.0, size=(5, 3))
     labels = ["C", "O", "H", "N", "S"]
@@ -53,7 +57,7 @@ def test_matches_mathematica_reference():
     cm = CromerMannTable()
 
     expected = _xelj2_reference(positions, labels, q, cm)
-    actual = intensity_j2_xray(positions, labels, q, cm)
+    actual = intensity_j2_xray(positions, labels, q, cm, normalize=False)
     np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
 
 
@@ -70,8 +74,25 @@ def test_diatomic_along_z_analytic():
     fO = np.array([fx_cromer_mann("O", sk, cm) for sk in s])
     expected = 2.0 * N_Y20 * fC * fO * spherical_jn(2, q * r)
 
-    actual = intensity_j2_xray(positions, labels, q, cm)
+    actual = intensity_j2_xray(positions, labels, q, cm, normalize=False)
     np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_normalisation_rescales_pair_products():
+    """With normalize=True (the default) every pair product f_a f_b is scaled
+    by (Z_a / f_a(0)) (Z_b / f_b(0)); for a diatomic that is a single global
+    factor relating the normalised and raw results exactly."""
+    r = 1.128
+    positions = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, r]])
+    labels = ["C", "O"]
+    q = np.linspace(0.0, 12.0, 50)
+    cm = CromerMannTable()
+
+    scale_c = 6.0 / fx_cromer_mann("C", 0.0, cm)
+    scale_o = 8.0 / fx_cromer_mann("O", 0.0, cm)
+    raw = intensity_j2_xray(positions, labels, q, cm, normalize=False)
+    normalised = intensity_j2_xray(positions, labels, q, cm)
+    np.testing.assert_allclose(normalised, scale_c * scale_o * raw, rtol=1e-12, atol=1e-14)
 
 
 def test_diatomic_perpendicular_is_minus_half():

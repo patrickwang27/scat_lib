@@ -10,6 +10,8 @@ Key characteristics
 - No Debye–Waller factors or damping.
 - Uses Cromer–Mann form factors with elemental/ionic labels that must match the bundled table.
 - Computes the molecular (total) intensity via the Debye expression with a ``sinc`` kernel.
+- Form factors are normalised so that ``f(0)`` equals the electron count exactly (see
+  `Normalisation and sum rules`_ below); pass ``normalize=False`` for the raw tables.
 
 Quickstart
 ----------
@@ -19,10 +21,10 @@ Quickstart
    import numpy as np
    from scat_lib.gas_iam import intensity_molecular_xray, intensity_pyscf
    from pyscf import gto
-   
+
    mol = gto.M(atom = 'Li 0 0 0; F 0 0 1.5639', basis = 'sto-3g')
    q = np.linspace(0, 10, 100)  # q in Ang
-   Iq = intensity_pyscf(mol, q, inelastic=True)  # I(q) in arbitrary units
+   I_el, I_inel = intensity_pyscf(mol, q, inelastic=True)  # elastic + incoherent components
 
 
 One can also specify the positions and labels directly with the ``intensity_molecular_xray``
@@ -40,12 +42,48 @@ array. A typical usage pattern looks like:
    labels, positions = read_xyz_frames('out.xyz')
    q = np.linspace(0, 10, 100)  # q in Ang
    for pos in positions:
-       Iq = intensity_molecular_xray(pos, labels, q, inelastic=True)
+       I_el, I_inel = intensity_molecular_xray(pos, labels, q, inelastic=True)
 
-   # Or use a list comprehension if you just need the intensities collected
-   Iqs = np.array([intensity_molecular_xray(pos, labels, q, inelastic=True) for pos in positions])
+   # Or use a list comprehension if you just need the total intensities collected
+   Iqs = np.array([np.sum(intensity_molecular_xray(pos, labels, q, inelastic=True), axis=0)
+                   for pos in positions])
    # Average over frames if desired
    Iq_avg = np.mean(Iqs, axis=0)
+
+
+Normalisation and sum rules
+---------------------------
+
+The tabulated form-factor parameterisations (the bundled Cromer–Mann table and
+xraydb's Waasmaier–Kirfel fits) are least-squares fits whose value at
+:math:`q = 0` misses the electron count by up to ~0.06 electrons per atom. By
+default all intensity functions therefore rescale each atomic form factor by
+:math:`(Z - \text{charge})/f(0)` (a relative change of order :math:`10^{-3}`),
+which enforces the exact sum rules
+
+.. math::
+
+   I_\text{elastic}(0) = N_e^2, \qquad I_\text{inelastic}(0) = 0,
+
+where :math:`N_e` is the total number of electrons. Pass ``normalize=False``
+(or use ``--no-normalize`` on the command line) to reproduce the raw tabulated
+values, e.g. for bit-for-bit parity with the original F90 outputs.
+
+Inelastic (incoherent) component
+--------------------------------
+
+The tabulated atomic incoherent scattering functions :math:`S(s)` in
+``data/isfl.txt`` are the Waller–Hartree values of Hubbell *et al.*,
+J. Phys. Chem. Ref. Data **4**, 471 (1975), Table I, for H–Cs on the grid
+:math:`s = \sin\theta/\lambda = 0.10 \dots 2.00` Å\ :sup:`-1`. Lookups build a
+monotone (PCHIP) interpolant anchored at the exact :math:`S(0) = 0` limit, so
+the full range :math:`s \in [0, 2]` is covered without any fallback seam;
+beyond :math:`s = 2` the curve continues smoothly towards the
+:math:`S(\infty) = Z` asymptote. Ions and elements heavier than Cs fall back
+to the cruder :math:`S(s) \approx N_e - f(s)` approximation. The inelastic
+component can also be requested from the command line via
+``--inelastic table`` (or ``xraydb``/``auto``), which adds ``I_inel(q)`` and
+``I_tot(q)`` columns to the output.
 
 
 
@@ -93,7 +131,10 @@ Notes
 - Element/ion labels must exactly match the keys in the bundled table (e.g., ``'C'``, ``'Cval'``, ``'Siv'``, ``'O1-'``).
 - Units: Positions are in Ångstrom, ``q`` is in inverse Å, and the Debye expression uses ``s = q / (4π)``.
 - Pass ``inelastic=True`` (or ``'table'`` / ``'xraydb'``) to ``intensity_molecular_xray`` /
-  ``intensity_components_xray`` to obtain the incoherent contribution alongside the coherent terms.
+  ``intensity_components_xray`` to obtain the incoherent contribution alongside the coherent terms;
+  ``intensity_molecular_xray`` then returns the ``(I_elastic, I_inelastic)`` tuple.
+- ``normalize=False`` disables the ``f(0) = Z - charge`` rescaling on any of the intensity
+  functions (see `Normalisation and sum rules`_).
 
 See also
 --------

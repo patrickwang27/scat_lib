@@ -71,10 +71,16 @@ class CromerMannTable:
 def load_cm_table(path: str | None = None) -> CromerMannTable:
     return CromerMannTable(path)
 
-def fx_cromer_mann(symbol: str, s: float, table: CromerMannTable) -> float:
+def fx_cromer_mann(symbol: str, s: "float | np.ndarray", table: CromerMannTable) -> "float | np.ndarray":
     """Evaluate f_x(s) from CM coefficients for `symbol` (e.g., 'C', 'Cval', 'Si', 'Siv', 'O1-').
-    s is sin(theta)/lambda in Å^-1.
+    s is sin(theta)/lambda in Å^-1; scalar input returns a float, array input an array
+    of the same shape.
     """
     coeffs = table.get(symbol)
+    s_arr = np.asarray(s, dtype=float)
+    s2 = np.atleast_1d(s_arr).ravel() ** 2
     # f(s) = sum_i a_i * exp(-b_i s^2) + c
-    return float(np.sum(coeffs.a * np.exp(-coeffs.b * (s*s))) + coeffs.c)
+    vals = coeffs.a @ np.exp(-np.outer(coeffs.b, s2)) + coeffs.c
+    if s_arr.ndim == 0:
+        return float(vals[0])
+    return vals.reshape(s_arr.shape)
