@@ -1,5 +1,6 @@
 from __future__ import annotations
 from scipy.interpolate import CubicSpline
+from scipy.special import spherical_jn
 import os
 import re
 from functools import lru_cache
@@ -266,6 +267,82 @@ def intensity_molecular_xray(positions: np.ndarray, labels: List[str], q: np.nda
         return comps[0] + comps[-1]
     return comps[0]
 
+# Y_2^0 normalisation of the anisotropic component: n * P_2(cos theta) = Y_2^0(theta)
+_Y20_NORM = np.sqrt(5.0 / PI) / 2.0
+
+
+def intensity_j2_xray(positions: np.ndarray, labels: List[str], q: np.ndarray, cm: Optional[CromerMannTable] = None,
+                      *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None) -> np.ndarray:
+    """
+    Return the anisotropic j2 component of the elastic scattering, I_j2(q).
+
+    Within the IAM the second (l = 2) term of the Legendre expansion of the
+    elastic scattering is
+
+        I_j2(q) = n * sum_{a != b} f_a(q) f_b(q) j_2(q r_ab) P_2(z_ab / r_ab)
+
+    where n = sqrt(5/pi)/2 (so that n P_2(cos theta) = Y_2^0(theta)), j_2 is
+    the spherical Bessel function of order 2, and P_2 is the second Legendre
+    polynomial evaluated at the normalised z-component of the interatomic
+    vector r_ab. Unlike the isotropic (j0) component, the sum runs only over
+    distinct atom pairs (no self terms) and the component is purely elastic:
+    inelastic scattering enters only the isotropic component within the IAM.
+
+    Parameters
+    ----------
+    positions : np.ndarray
+        Array of shape (N, 3) with atomic positions in Angstrom.
+    labels : List[str]
+        List of length N with atomic symbols or labels.
+    q : np.ndarray
+        1D array of q values (in 1/Angstrom) at which to
+        compute the scattering intensity.
+    cm : Optional[CromerMannTable], optional
+        Optional Cromer-Mann table to use if backend is 'affl'.
+        If None, a default table will be used. Default is None.
+    backend : str | FXFunc, optional
+        Backend to use for atomic form factors.
+        'affl' (default) for internal Cromer–Mann table,
+        or 'xraydb' to use xraydb.f0,
+        or a callable function of signature fx(symbol: str, s: float) -> float.
+        Default is 'affl'.
+    ion_map : Optional[Mapping[str, str]], optional
+        Optional mapping of labels to standard symbols,
+        e.g., {'Cval':'C', 'Siv':'Si4+'}.
+        Only used if backend is 'xraydb'. Default is None.
+
+    Returns
+    -------
+    np.ndarray
+        1D array of the anisotropic elastic component I_j2(q).
+    """
+    R = np.asarray(positions, float)
+    q = np.asarray(q, float)
+    diffs = R[:,None,:] - R[None,:,:]
+    rij = np.linalg.norm(diffs, axis=2)  # (N,N)
+    # P_2(cos theta_ab) directly from the normalised z-component of r_ab.
+    # Entries with r_ab = 0 carry no weight since j2(0) = 0; the guarded
+    # divide only keeps them finite.
+    zr = np.divide(diffs[:,:,2], rij, out=np.zeros_like(rij), where=rij > 0.0)
+    P2 = 1.5*zr*zr - 0.5
+    np.fill_diagonal(P2, 0.0)  # no self terms in the anisotropic component
+
+    if isinstance(backend, str) and backend.lower() in ('affl', 'cm', 'cromer-mann'):
+        cm = cm or CromerMannTable()
+    fx = _fx_from_backend(backend, cm=cm, ion_map=ion_map)
+
+    labels = list(labels)
+    uniq = sorted(set(labels))
+    I_j2 = np.zeros(q.shape, float)
+    for k, qk in enumerate(q):
+        s = qk / (4.0*PI)
+        f_by_sym = {sym: float(fx(sym, s)) for sym in uniq}
+        w = np.array([f_by_sym[sym] for sym in labels], float)
+        K = spherical_jn(2, qk * rij) * P2
+        I_j2[k] = _Y20_NORM * float(w @ (K @ w))
+    return I_j2
+
+
 def intensity_pyscf(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTable] = None,
                      *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None,
                      inelastic: bool | str = False):
@@ -289,5 +366,29 @@ def intensity_pyscf(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTable
     from .pyscf_bridge import positions_and_labels_from_mole
     positions, labels = positions_and_labels_from_mole(mol)
     return intensity_molecular_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map, inelastic=inelastic)
+
+
+def intensity_pyscf_j2(mol: "gto.Mole", q: np.ndarray, cm: Optional[CromerMannTable] = None,
+                       *, backend: str | FXFunc = 'affl', ion_map: Optional[Mapping[str, str]] = None) -> np.ndarray:
+    """
+    Return the anisotropic j2 elastic component I_j2(q) from a PySCF gto.Mole object.
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        PySCF molecule with atom positions and labels.
+    q : np.ndarray
+        1D array of q values (in 1/Angstrom).
+    cm, backend, ion_map :
+        Same semantics as :func:`intensity_j2_xray`.
+
+    Returns
+    -------
+    np.ndarray
+        1D array of the anisotropic elastic component I_j2(q).
+    """
+    from .pyscf_bridge import positions_and_labels_from_mole
+    positions, labels = positions_and_labels_from_mole(mol)
+    return intensity_j2_xray(positions, labels, q, cm, backend=backend, ion_map=ion_map)
 
     

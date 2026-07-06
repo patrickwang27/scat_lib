@@ -49,6 +49,44 @@ array. A typical usage pattern looks like:
 
 
 
+Anisotropic j2 component
+------------------------
+
+In addition to the isotropic (j0) intensity, the subpackage computes the anisotropic
+j2 component of the elastic scattering,
+
+.. math::
+
+   I_{j_2}(q) = \frac{\sqrt{5/\pi}}{2} \sum_{a \neq b} f_a(q)\, f_b(q)\,
+                j_2(q\, r_{ab})\, P_2\!\left(\frac{z_{ab}}{r_{ab}}\right),
+
+where :math:`j_2` is the spherical Bessel function of order 2 and :math:`P_2` is the
+second Legendre polynomial evaluated at the normalised z-component of the interatomic
+vector. The prefactor makes the angular kernel the spherical harmonic
+:math:`Y_2^0`. The sum runs only over distinct atom pairs (no self terms), and the
+component is purely elastic — within the IAM, inelastic scattering enters only the
+isotropic component.
+
+.. code-block:: python
+
+   import numpy as np
+   from scat_lib.gas_iam import intensity_j2_xray, intensity_pyscf_j2
+   from pyscf import gto
+
+   mol = gto.M(atom = 'Li 0 0 0; F 0 0 1.5639', basis = 'sto-3g')
+   q = np.linspace(0, 10, 100)  # q in inverse Ang
+   I_j2 = intensity_pyscf_j2(mol, q)
+
+   # Or directly from positions and labels:
+   positions = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.5639]])
+   I_j2 = intensity_j2_xray(positions, ['Li', 'F'], q)
+
+The command-line interface exposes the same component via the ``--j2`` flag:
+
+.. code-block:: bash
+
+   python -m scat_lib.gas_iam --xyz molecule.xyz --j2 --out Ij2.txt
+
 Notes
 -----
 
